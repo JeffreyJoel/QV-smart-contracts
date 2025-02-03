@@ -1,0 +1,36 @@
+{
+  "transactions": [
+    {
+      "hash": "0x4798057a41511d6574b25aba8b2945f2dd17211211cadfaa5b81718e401e143e",
+      "transactionType": "CALL",
+      "contractName": "QVContract",
+      "contractAddress": "0x786333fFf4535F1169786d42F7e007abFD85Bd20",
+      "function": "registerVoter(string)",
+      "arguments": [
+        "\"jeffowoloko@gmail.com\""
+      ],
+      "transaction": {
+        "type": "0x02",
+        "from": "0xddb342ecc94236c29a5307d3757d0724d759453c",
+        "to": "0x786333fff4535f1169786d42f7e007abfd85bd20",
+        "gas": "0xf29f",
+        "value": "0x0",
+        "data": "0x6428a486000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000156a6566666f776f6c6f6b6f40676d61696c2e636f6d0000000000000000000000",
+        "nonce": "0x4",
+        "accessList": []
+      },
+      "additionalContracts": [],
+      "isFixedGasLimit": false
+    }
+  ],
+  "receipts": [],
+  "libraries": [],
+  "pending": [
+    "0x4798057a41511d6574b25aba8b2945f2dd17211211cadfaa5b81718e401e143e"
+  ],
+  "returns": {},
+  "timestamp": 1734482454,
+  "chain": 84532,
+  "multi": false,
+  "commit": "5922de9"
+}

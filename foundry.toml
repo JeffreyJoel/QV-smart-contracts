@@ -6,3 +6,11 @@ libs = ["lib"]
 remappings = ['@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/']
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC_URL}"
+baseSepolia = "${BASE_SEPOLIA_RPC_URL}"
+
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
+baseSepolia = { key = "${BASE_API_KEY}" }
