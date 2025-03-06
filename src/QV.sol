@@ -15,7 +15,9 @@ contract QVContract {
         address creator;
         mapping(uint256 => VotingSession) sessions;
         uint256 sessionCount;
-        mapping(address => bool) authorizedVoters; // Track who has access to the room
+        mapping(address => bool) authorizedVoters;
+        uint256 createdAt;
+        uint256 participantCount;
     }
 
     struct VotingSession {
@@ -53,15 +55,31 @@ contract QVContract {
     mapping(uint256 => Room) public rooms;
     mapping(address => Voter) public voters;
     mapping(address => Vote[]) public userVoteHistory;
+    mapping(uint256 => uint256[]) public sessionIdsByRoom;
+    uint256[] public roomIds;
     uint256 public roomCount;
-    uint256 public baseCredits = 100;
+    uint8 public baseCredits = 100;
     address public owner;
 
     /// Events ///
     event RoomCreated(uint256 indexed roomId, string name, address creator);
-    event SessionCreated(uint256 indexed roomId, uint256 indexed sessionId, string name, address creator);
-    event ProposalAdded(uint256 indexed sessionId, uint256 indexed proposalId, string description);
-    event VoteCast(address indexed voter, uint256 indexed proposalId, uint256 credits, uint256 cost);
+    event SessionCreated(
+        uint256 indexed roomId,
+        uint256 indexed sessionId,
+        string name,
+        address creator
+    );
+    event ProposalAdded(
+        uint256 indexed sessionId,
+        uint256 indexed proposalId,
+        string description
+    );
+    event VoteCast(
+        address indexed voter,
+        uint256 indexed proposalId,
+        uint256 credits,
+        uint256 cost
+    );
     event VoterRegistered(address indexed voter, string matNumber);
     event RoomAccessGranted(uint256 indexed roomId, address indexed voter);
 
@@ -85,16 +103,17 @@ contract QVContract {
         string memory _description,
         string memory _entryKey
     ) external {
-        uint256 roomId = roomCount++;
+        uint256 roomId = roomCount += 1;
         Room storage newRoom = rooms[roomId];
         newRoom.name = _name;
         newRoom.description = _description;
         newRoom.entryKeyHash = keccak256(abi.encodePacked(_entryKey));
         newRoom.active = true;
         newRoom.creator = msg.sender;
-
+        newRoom.createdAt = block.timestamp;
         // Auto-authorize room creator
         newRoom.authorizedVoters[msg.sender] = true;
+        roomIds.push(roomId);
 
         emit RoomCreated(roomId, _name, msg.sender);
     }
@@ -110,16 +129,22 @@ contract QVContract {
     function joinRoom(uint256 _roomId, string memory _entryKey) external {
         if (!voters[msg.sender].isRegistered) revert VoterNotRegistered();
         if (!rooms[_roomId].active) revert RoomNotActive();
-        
+
         bytes32 providedKeyHash = keccak256(abi.encodePacked(_entryKey));
-        if (providedKeyHash != rooms[_roomId].entryKeyHash) revert InvalidEntryKey();
+        if (providedKeyHash != rooms[_roomId].entryKeyHash)
+            revert InvalidEntryKey();
 
         rooms[_roomId].authorizedVoters[msg.sender] = true;
+        rooms[_roomId].participantCount += 1;
+
         emit RoomAccessGranted(_roomId, msg.sender);
     }
 
     /// @notice Check if a user has access to a room
-    function hasRoomAccess(uint256 _roomId, address _user) public view returns (bool) {
+    function hasRoomAccess(
+        uint256 _roomId,
+        address _user
+    ) public view returns (bool) {
         return rooms[_roomId].authorizedVoters[_user];
     }
 
@@ -133,8 +158,12 @@ contract QVContract {
         Proposal[] memory _proposals
     ) external {
         if (!rooms[_roomId].active) revert RoomNotActive();
-        if (!rooms[_roomId].authorizedVoters[msg.sender]) revert NotAuthorized();
-        require(_startTime > block.timestamp, "Start time must be in the future!");
+        if (!rooms[_roomId].authorizedVoters[msg.sender])
+            revert NotAuthorized();
+        require(
+            _startTime > block.timestamp,
+            "Start time must be in the future!"
+        );
         require(_endTime > _startTime, "End time must be after start time!");
         require(_proposals.length > 0, "At least one proposal is required!");
 
@@ -146,62 +175,205 @@ contract QVContract {
         newSession.endTime = _endTime;
         newSession.creditsPerVoter = _creditsPerVoter;
         newSession.creator = msg.sender;
-
-        if (_startTime <= block.timestamp) {
-            newSession.active = true;
-        }
+        newSession.active = true;
 
         for (uint256 i = 0; i < _proposals.length; i++) {
             uint256 proposalId = newSession.proposalCount++;
             Proposal storage newProposal = newSession.proposals[proposalId];
             newProposal.title = _proposals[i].title;
             newProposal.description = _proposals[i].description;
-            emit ProposalAdded(sessionId, proposalId, _proposals[i].description);
+            emit ProposalAdded(
+                sessionId,
+                proposalId,
+                _proposals[i].description
+            );
         }
+        sessionIdsByRoom[_roomId].push(sessionId);
 
         emit SessionCreated(_roomId, sessionId, _name, msg.sender);
     }
 
-    function castVote(uint256 _roomId, uint256 _sessionId, uint256 _proposalId, uint256 _credits) external {
+    function castVote(
+        uint256 _roomId,
+        uint256 _sessionId,
+        uint256[] memory _proposalIds,
+        uint256[] memory _credits
+    ) external {
         // Check room and authorization
         if (!rooms[_roomId].active) revert RoomNotActive();
-        if (!rooms[_roomId].authorizedVoters[msg.sender]) revert NotAuthorized();
-        
+        if (!rooms[_roomId].authorizedVoters[msg.sender])
+            revert NotAuthorized();
+
         VotingSession storage session = rooms[_roomId].sessions[_sessionId];
-        
+
         // Check session timing
-        if (block.timestamp < session.startTime || block.timestamp > session.endTime) {
+        if (
+            block.timestamp < session.startTime ||
+            block.timestamp > session.endTime
+        ) {
             revert SessionNotInProgress();
         }
-        
+
         // Initialize credits for first-time voters in this session
         if (session.voterCredits[msg.sender] == 0) {
             session.voterCredits[msg.sender] = baseCredits;
         }
-        
-        // Check credits
-        if (session.voterCredits[msg.sender] < _credits) {
-            revert InsufficientCredits();
+
+        // Ensure the arrays are of the same length
+        require(
+            _proposalIds.length == _credits.length,
+            "Mismatched proposal IDs and credits"
+        );
+
+        // Iterate through the arrays and process each vote
+        for (uint256 i = 0; i < _proposalIds.length; i++) {
+            uint256 proposalId = _proposalIds[i];
+            uint256 credits = _credits[i];
+
+            // Check if the voter has enough credits
+            if (session.voterCredits[msg.sender] < credits) {
+                revert InsufficientCredits();
+            }
+
+            // Calculate the vote weight using the square root of the credits
+            uint256 vote = _sqrt(credits);
+
+            // Update the vote count for the proposal
+            session.votesPerProposal[msg.sender][proposalId] += vote;
+            session.voterCredits[msg.sender] -= credits;
+            session.proposals[proposalId].voteCount += vote;
+
+            // Record vote in history
+            userVoteHistory[msg.sender].push(
+                Vote({
+                    proposalId: proposalId,
+                    credits: credits,
+                    timestamp: block.timestamp
+                })
+            );
+
+            emit VoteCast(msg.sender, proposalId, vote, credits);
         }
-
-        uint256 vote = _sqrt(_credits);
-        session.votesPerProposal[msg.sender][_proposalId] += vote;
-        session.voterCredits[msg.sender] -= _credits;
-        session.proposals[_proposalId].voteCount += vote;
-
-        // Record vote in history
-        userVoteHistory[msg.sender].push(Vote({
-            proposalId: _proposalId,
-            credits: _credits,
-            timestamp: block.timestamp
-        }));
-
-        emit VoteCast(msg.sender, _proposalId, vote, _credits);
     }
 
     /// @notice Get remaining credits for a voter in a session
-    function getVoterCredits(uint256 _roomId, uint256 _sessionId, address _voter) external view returns (uint256) {
+    function getVoterCredits(
+        uint256 _roomId,
+        uint256 _sessionId,
+        address _voter
+    ) external view returns (uint256) {
         return rooms[_roomId].sessions[_sessionId].voterCredits[_voter];
+    }
+
+    function getRoomDetails(
+        uint256 _roomId
+    )
+        external
+        view
+        returns (
+            string memory name,
+            string memory description,
+            bool active,
+            address creator
+        )
+    {
+        Room storage room = rooms[_roomId];
+        return (room.name, room.description, room.active, room.creator);
+    }
+
+    /// @notice Get voter details
+    function getVoterDetails(
+        address _voter
+    ) external view returns (string memory matNumber, bool isRegistered) {
+        Voter storage voter = voters[_voter];
+        return (voter.matNumber, voter.isRegistered);
+    }
+
+    /// @notice Get vote history for a user
+    function getUserVoteHistory(
+        address _user
+    ) external view returns (Vote[] memory) {
+        return userVoteHistory[_user];
+    }
+
+    /// @notice Get all session IDs for a room
+    function getSessionIdsForRoom(
+        uint256 _roomId
+    ) external view returns (uint256[] memory) {
+        return sessionIdsByRoom[_roomId];
+    }
+
+    /// @notice Get all room IDs
+    function getAllRoomIds() external view returns (uint256[] memory) {
+        return roomIds;
+    }
+
+    /// @notice Get session details
+    function getSessionDetails(
+        uint256 _roomId,
+        uint256 _sessionId
+    )
+        external
+        view
+        returns (
+            string memory name,
+            string memory description,
+            uint256 startTime,
+            uint256 endTime,
+            uint256 creditsPerVoter,
+            bool active,
+            address creator,
+            uint256 proposalCount
+        )
+    {
+        VotingSession storage session = rooms[_roomId].sessions[_sessionId];
+        return (
+            session.name,
+            session.description,
+            session.startTime,
+            session.endTime,
+            session.creditsPerVoter,
+            session.active,
+            session.creator,
+            session.proposalCount
+        );
+    }
+
+    /// @notice Get proposal details
+    function getProposalDetails(
+        uint256 _roomId,
+        uint256 _sessionId,
+        uint256 _proposalId
+    )
+        external
+        view
+        returns (
+            string memory title,
+            string memory description,
+            uint256 voteCount
+        )
+    {
+        VotingSession storage session = rooms[_roomId].sessions[_sessionId];
+        Proposal storage proposal = session.proposals[_proposalId];
+        return (proposal.title, proposal.description, proposal.voteCount);
+    }
+
+    /// @notice Get votes cast by a voter for a specific proposal in a session
+    function getVoterProposalVotes(
+        uint256 _roomId,
+        uint256 _sessionId,
+        address _voter,
+        uint256 _proposalId
+    ) external view returns (uint256) {
+        require(
+            _proposalId < rooms[_roomId].sessions[_sessionId].proposalCount,
+            "Invalid proposal ID"
+        );
+
+        return
+            rooms[_roomId].sessions[_sessionId].votesPerProposal[_voter][
+                _proposalId
+            ];
     }
 
     /// Internal functions ///
